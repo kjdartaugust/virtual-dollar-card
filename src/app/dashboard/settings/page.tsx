@@ -20,18 +20,18 @@ export default function SettingsPage() {
 
   if (!state) return null;
 
-  const onLogout = () => {
-    logout();
+  const onLogout = async () => {
+    await logout();
     router.replace("/");
   };
 
-  const onReset = () => {
+  const onReset = async () => {
     // Clear this account's local data.
     if (typeof window !== "undefined") {
       const key = isDemo ? "dola:state:demo" : `dola:state:${state.profile.id}`;
       window.localStorage.removeItem(key);
     }
-    logout();
+    await logout();
     toast("Account data cleared", "success");
     router.replace("/");
   };

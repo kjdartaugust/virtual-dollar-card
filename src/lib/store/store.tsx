@@ -14,6 +14,11 @@ import { getIssuer } from "@/lib/issuer";
 import { uid } from "@/lib/utils";
 import { demoState, emptyState } from "./seed";
 
+// When true, auth + all mutations go through the real backend API. When false
+// (no env), the app runs fully client-side on localStorage. The demo account is
+// always local regardless, so "Try the demo" works in both modes.
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_ENABLED === "true";
+
 interface Account {
   id: string;
   email: string;
@@ -45,32 +50,48 @@ function newReference() {
   return "DOLA-" + uid().toUpperCase() + uid().slice(0, 2).toUpperCase();
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function api(path: string, body?: unknown): Promise<any> {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, ...json };
+}
+
 interface StoreContextValue {
   ready: boolean;
   state: AppState | null;
   isDemo: boolean;
-  // auth
+  isBackend: boolean;
   signUp: (p: {
     email: string;
     password: string;
     fullName: string;
     phone?: string;
-  }) => { ok: boolean; error?: string };
-  login: (email: string, password: string) => { ok: boolean; error?: string };
+  }) => Promise<{ ok: boolean; error?: string }>;
+  login: (
+    email: string,
+    password: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   loginDemo: () => void;
-  logout: () => void;
-  // app actions
+  logout: () => Promise<void>;
   submitKyc: (p: {
     idType: IdType;
     idNumber: string;
     dateOfBirth: string;
     address: string;
     city: string;
-  }) => void;
+  }) => Promise<void>;
   fundWallet: (
     ghs: number,
     method: string
-  ) => Promise<{ ok: boolean; usd?: number; error?: string }>;
+  ) => Promise<{ ok: boolean; usd?: number; error?: string; redirect?: boolean }>;
+  verifyFunding: (
+    reference: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   issueCard: (p: {
     label: string;
     brand: CardBrand;
@@ -100,38 +121,64 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [state, setState] = useState<AppState | null>(null);
+  const [backendSession, setBackendSession] = useState(false);
   const issuer = getIssuer();
 
   const isDemo = sessionId === "demo";
 
-  // Load session on mount.
+  // Bootstrap: local session wins if present (demo/local accounts); otherwise
+  // in backend mode, restore a server session via the httpOnly cookie.
   useEffect(() => {
-    const sid = read<string | null>(SESSION_KEY, null);
-    if (sid) {
-      const loaded = read<AppState | null>(stateKey(sid), null);
-      if (loaded) {
-        setSessionId(sid);
-        setState(loaded);
+    let cancelled = false;
+    (async () => {
+      const sid = read<string | null>(SESSION_KEY, null);
+      if (sid) {
+        const loaded = read<AppState | null>(stateKey(sid), null);
+        if (loaded) {
+          setSessionId(sid);
+          setState(loaded);
+          setBackendSession(false);
+          setReady(true);
+          return;
+        }
       }
-    }
-    setReady(true);
+      if (BACKEND) {
+        const res = await api("/api/state");
+        if (!cancelled && res.state) {
+          setSessionId("backend");
+          setState(res.state);
+          setBackendSession(true);
+        }
+      }
+      if (!cancelled) setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Persist state whenever it changes.
+  // Persist only local sessions; backend state lives in Postgres.
   useEffect(() => {
-    if (sessionId && state) write(stateKey(sessionId), state);
-  }, [sessionId, state]);
+    if (!backendSession && sessionId && state) write(stateKey(sessionId), state);
+  }, [backendSession, sessionId, state]);
 
   const pushTxn = (s: AppState, txn: Transaction): AppState => ({
     ...s,
     transactions: [txn, ...s.transactions],
   });
 
-  const signUp: StoreContextValue["signUp"] = (p) => {
-    const accounts = read<Account[]>(ACCOUNTS_KEY, []);
-    if (accounts.some((a) => a.email.toLowerCase() === p.email.toLowerCase())) {
-      return { ok: false, error: "An account with this email already exists." };
+  const signUp: StoreContextValue["signUp"] = async (p) => {
+    if (BACKEND) {
+      const res = await api("/api/auth/signup", p);
+      if (!res.ok) return { ok: false, error: res.error };
+      setSessionId("backend");
+      setState(res.state);
+      setBackendSession(true);
+      return { ok: true };
     }
+    const accounts = read<Account[]>(ACCOUNTS_KEY, []);
+    if (accounts.some((a) => a.email.toLowerCase() === p.email.toLowerCase()))
+      return { ok: false, error: "An account with this email already exists." };
     const account: Account = {
       id: uid("usr_"),
       email: p.email,
@@ -153,17 +200,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     write(SESSION_KEY, account.id);
     setSessionId(account.id);
     setState(fresh);
+    setBackendSession(false);
     return { ok: true };
   };
 
-  const login: StoreContextValue["login"] = (email, password) => {
+  const login: StoreContextValue["login"] = async (email, password) => {
+    if (BACKEND) {
+      const res = await api("/api/auth/login", { email, password });
+      if (!res.ok) return { ok: false, error: res.error };
+      setSessionId("backend");
+      setState(res.state);
+      setBackendSession(true);
+      return { ok: true };
+    }
     const accounts = read<Account[]>(ACCOUNTS_KEY, []);
     const acct = accounts.find(
       (a) => a.email.toLowerCase() === email.toLowerCase()
     );
-    if (!acct || acct.password !== password) {
+    if (!acct || acct.password !== password)
       return { ok: false, error: "Invalid email or password." };
-    }
     const loaded =
       read<AppState | null>(stateKey(acct.id), null) ??
       emptyState({
@@ -177,9 +232,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     write(SESSION_KEY, acct.id);
     setSessionId(acct.id);
     setState(loaded);
+    setBackendSession(false);
     return { ok: true };
   };
 
+  // Demo is always a local experience.
   const loginDemo = () => {
     const existing = read<AppState | null>(stateKey("demo"), null);
     const fresh = existing ?? demoState();
@@ -187,23 +244,30 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     write(SESSION_KEY, "demo");
     setSessionId("demo");
     setState(fresh);
+    setBackendSession(false);
   };
 
-  const logout = () => {
-    write(SESSION_KEY, "");
+  const logout: StoreContextValue["logout"] = async () => {
+    if (backendSession) await api("/api/auth/logout", {});
     if (typeof window !== "undefined")
       window.localStorage.removeItem(SESSION_KEY);
     setSessionId(null);
     setState(null);
+    setBackendSession(false);
   };
 
-  const submitKyc: StoreContextValue["submitKyc"] = (p) => {
+  const submitKyc: StoreContextValue["submitKyc"] = async (p) => {
+    if (backendSession) {
+      const res = await api("/api/kyc", p);
+      if (res.ok) setState(res.state);
+      return;
+    }
     setState((s) => {
       if (!s) return s;
       return {
         ...s,
         kyc: {
-          status: "verified", // sandbox: auto-approve
+          status: "verified",
           idType: p.idType,
           idNumber: p.idNumber,
           dateOfBirth: p.dateOfBirth,
@@ -217,6 +281,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   const fundWallet: StoreContextValue["fundWallet"] = async (ghs, method) => {
+    if (backendSession) {
+      const res = await api("/api/wallet/fund", { ghs, method });
+      if (!res.ok) return { ok: false, error: res.error };
+      if (res.mode === "paystack" && res.authorizationUrl) {
+        window.location.href = res.authorizationUrl;
+        return { ok: true, redirect: true };
+      }
+      if (res.state) setState(res.state);
+      return { ok: true };
+    }
     if (ghs < CONFIG.minFundGhs)
       return { ok: false, error: `Minimum is GHS ${CONFIG.minFundGhs}.` };
     if (ghs > CONFIG.maxFundGhs)
@@ -236,14 +310,41 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         createdAt: new Date().toISOString(),
       };
       return pushTxn(
-        { ...s, wallet: { ...s.wallet, usdBalance: +(s.wallet.usdBalance + usd).toFixed(2) } },
+        {
+          ...s,
+          wallet: {
+            ...s.wallet,
+            usdBalance: +(s.wallet.usdBalance + usd).toFixed(2),
+          },
+        },
         txn
       );
     });
     return { ok: true, usd };
   };
 
+  const verifyFunding: StoreContextValue["verifyFunding"] = async (
+    reference
+  ) => {
+    const res = await api("/api/wallet/verify", { reference });
+    if (res.state) {
+      setSessionId("backend");
+      setState(res.state);
+      setBackendSession(true);
+    }
+    return { ok: res.ok, error: res.error };
+  };
+
   const issueCard: StoreContextValue["issueCard"] = async (p) => {
+    if (backendSession) {
+      const res = await api("/api/cards", p);
+      if (!res.ok) return { ok: false, error: res.error };
+      setState(res.state);
+      const card = (res.state as AppState).cards.find(
+        (c) => c.id === res.cardId
+      );
+      return { ok: true, card };
+    }
     if (!state) return { ok: false, error: "Not signed in." };
     if (state.kyc.status !== "verified")
       return { ok: false, error: "Complete identity verification first." };
@@ -265,7 +366,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       initialLoadUsd: p.initialLoadUsd,
       label: p.label,
     });
-
     const card: Card = {
       id: uid("card_"),
       providerRef: issued.providerRef,
@@ -282,7 +382,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       createdAt: new Date().toISOString(),
       last4: issued.last4,
     };
-
     setState((s) => {
       if (!s) return s;
       const now = new Date().toISOString();
@@ -322,6 +421,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   const fundCard: StoreContextValue["fundCard"] = async (cardId, usd) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, { action: "fund", amount: usd });
+      if (res.state) setState(res.state);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
     if (!state) return { ok: false, error: "Not signed in." };
     if (usd <= 0) return { ok: false, error: "Enter an amount." };
     if (state.wallet.usdBalance < usd)
@@ -358,7 +462,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return { ok: true };
   };
 
-  const withdrawCard: StoreContextValue["withdrawCard"] = async (cardId, usd) => {
+  const withdrawCard: StoreContextValue["withdrawCard"] = async (
+    cardId,
+    usd
+  ) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, {
+        action: "withdraw",
+        amount: usd,
+      });
+      if (res.state) setState(res.state);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
     if (!state) return { ok: false, error: "Not signed in." };
     const card = state.cards.find((c) => c.id === cardId);
     if (!card) return { ok: false, error: "Card not found." };
@@ -399,6 +514,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     cardId,
     frozen
   ) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, {
+        action: frozen ? "freeze" : "unfreeze",
+      });
+      if (res.state) setState(res.state);
+      return;
+    }
     const card = state?.cards.find((c) => c.id === cardId);
     if (!card) return;
     if (frozen) await issuer.freezeCard(card.providerRef);
@@ -417,12 +539,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   const terminateCard: StoreContextValue["terminateCard"] = async (cardId) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, { action: "terminate" });
+      if (res.state) setState(res.state);
+      return;
+    }
     const card = state?.cards.find((c) => c.id === cardId);
     if (!card) return;
     await issuer.terminateCard(card.providerRef);
     setState((s) => {
       if (!s) return s;
-      // Refund remaining card balance to wallet on termination.
       const refund = card.balance;
       const txns: Transaction[] = [];
       if (refund > 0) {
@@ -453,6 +579,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   const spend: StoreContextValue["spend"] = async (cardId, usd, merchant) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, {
+        action: "spend",
+        amount: usd,
+        merchant,
+      });
+      if (res.state) setState(res.state);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
     if (!state) return { ok: false, error: "Not signed in." };
     const card = state.cards.find((c) => c.id === cardId);
     if (!card) return { ok: false, error: "Card not found." };
@@ -462,7 +597,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       amountUsd: usd,
       merchant,
     });
-
     const declined = (reason: string) => {
       setState((s) => {
         if (!s) return s;
@@ -482,11 +616,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
       return { ok: false, error: reason };
     };
-
     if (!auth.approved) return declined(auth.reason ?? "Declined");
     if (card.status !== "active") return declined("Card is not active");
     if (card.balance < usd) return declined("Insufficient card balance");
-
     setState((s) => {
       if (!s) return s;
       const txn: Transaction = {
@@ -517,12 +649,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     ready,
     state,
     isDemo,
+    isBackend: backendSession,
     signUp,
     login,
     loginDemo,
     logout,
     submitKyc,
     fundWallet,
+    verifyFunding,
     issueCard,
     fundCard,
     withdrawCard,

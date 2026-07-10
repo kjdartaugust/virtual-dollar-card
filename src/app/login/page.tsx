@@ -19,10 +19,10 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const res = login(email.trim(), password);
+    const res = await login(email.trim(), password);
     if (res.ok) {
       toast("Welcome back", "success");
       router.push("/dashboard");

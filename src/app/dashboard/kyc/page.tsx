@@ -37,8 +37,7 @@ export default function KycPage() {
     e.preventDefault();
     setLoading(true);
     // Emulate provider verification.
-    await new Promise((r) => setTimeout(r, 1100));
-    submitKyc(form);
+    await submitKyc(form);
     setLoading(false);
     toast("Identity verified ✓", "success");
     router.push("/dashboard");

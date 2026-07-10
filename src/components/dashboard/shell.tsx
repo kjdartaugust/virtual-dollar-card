@@ -49,8 +49,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const onLogout = () => {
-    logout();
+  const onLogout = async () => {
+    await logout();
     router.replace("/");
   };
 

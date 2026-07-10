@@ -33,9 +33,15 @@ export function FundWalletModal({
     // Simulate a Paystack checkout round-trip.
     await new Promise((r) => setTimeout(r, 900));
     const res = await fundWallet(amount, method);
+    if (res.ok && res.redirect) return; // redirecting to Paystack checkout
     setLoading(false);
     if (res.ok) {
-      toast(`Wallet funded with ${formatUSD(res.usd ?? 0)}`, "success");
+      toast(
+        res.usd
+          ? `Wallet funded with ${formatUSD(res.usd)}`
+          : "Wallet funded",
+        "success"
+      );
       onClose();
       setGhs("250");
     } else {

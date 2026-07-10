@@ -26,14 +26,14 @@ export default function SignupPage() {
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (form.password.length < 6) {
       toast("Password must be at least 6 characters", "error");
       return;
     }
     setLoading(true);
-    const res = signUp({
+    const res = await signUp({
       email: form.email.trim(),
       password: form.password,
       fullName: form.fullName.trim(),
