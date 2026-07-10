@@ -106,7 +106,7 @@ export default function SignupPage() {
 
           <p className="mt-4 flex items-center justify-center gap-2 text-xs text-muted-foreground">
             <ShieldCheck className="h-4 w-4 text-primary" />
-            Sandbox project — data stays on this device only.
+            Sandbox project — test data only, no real funds move.
           </p>
 
           <p className="mt-6 text-center text-sm text-muted-foreground">
