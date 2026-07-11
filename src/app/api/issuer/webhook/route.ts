@@ -1,13 +1,33 @@
 import { NextResponse } from "next/server";
-import { recordCardSpend } from "@/lib/server/repo";
+import {
+  authorizeCardSpend,
+  cardBalanceUsd,
+  recordCardSpend,
+} from "@/lib/server/repo";
 
-// Issuer webhook — where real card authorizations/transactions land.
+// Issuer webhook — Dola's JIT (just-in-time) authorization gateway.
 //
-// Sudo posts here with an authorization token you set when creating the webhook
-// (Dashboard → Developers → Webhooks). We verify that token, then record the
-// spend against the matching card. The exact payload shape isn't documented, so
-// we parse defensively and log the raw event to refine mapping from a real
-// delivery. Always returns 200 so the provider stops retrying.
+// Sudo does not decide whether a card spend goes through; we do. The card's
+// funding source points at this URL, and when the card is used at a merchant
+// the network calls us and waits up to 4 seconds for a verdict:
+//
+//   authorization.request → approve/decline against the card's balance in Neon
+//   card.balance          → the network asking what the card is worth
+//   transaction.created   → the spend actually settled; debit the ledger
+//
+// Verdicts are ISO 8583 response codes ("00" approve, "51" insufficient funds).
+// Amount units differ per event: authorizations carry minor units (cents),
+// settled transactions carry major units (dollars, negative for a debit).
+//
+// Sudo sends the funding source's `authorizationHeader` verbatim as the
+// Authorization header. Failing closed on a bad token would decline real spends,
+// so an unrecognized token is rejected outright rather than silently approved.
+
+const APPROVE = { statusCode: 200, data: { responseCode: "00" } };
+const decline = (responseCode: string) => ({
+  statusCode: 400,
+  data: { responseCode },
+});
 
 function tokenOk(headers: Headers): boolean {
   const expected = process.env.SUDO_WEBHOOK_TOKEN;
@@ -23,12 +43,14 @@ function tokenOk(headers: Headers): boolean {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function pick(obj: any, ...paths: string[]): any {
-  for (const p of paths) {
-    const val = p.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
-    if (val != null) return val;
-  }
-  return undefined;
+type Obj = any;
+
+// `card` is an object on authorization events and a bare id string on settled
+// transactions.
+function cardRef(obj: Obj): string {
+  const c = obj?.card;
+  if (typeof c === "string") return c;
+  return String(c?._id ?? obj?._id ?? "");
 }
 
 export async function POST(req: Request) {
@@ -39,42 +61,71 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  let event: Obj;
   try {
-    const event = JSON.parse(raw);
-    console.log("issuer-webhook event:", raw.slice(0, 1500));
+    event = JSON.parse(raw);
+  } catch {
+    console.error("issuer-webhook: unparseable body");
+    return NextResponse.json({ received: true });
+  }
 
-    const data = event.data ?? event;
-    const type = String(pick(event, "type", "event") ?? pick(data, "type") ?? "");
-    const providerRef = String(
-      pick(data, "card._id", "card.id", "card", "cardId") ?? ""
-    );
-    // Amount may be dollars or minor units depending on the event; treat >= 1000
-    // integer as minor units. (Refined after inspecting a real delivery.)
-    const rawAmount = Number(pick(data, "amount", "amountUsd", "billingAmount") ?? 0);
-    const amountUsd = rawAmount > 1000 ? rawAmount / 100 : rawAmount;
-    const merchant =
-      pick(data, "merchant.name", "merchant", "merchantName") ?? "Card purchase";
-    const externalRef = String(
-      pick(data, "_id", "transactionId", "id", "reference") ??
-        pick(event, "_id", "id") ??
-        crypto.randomUUID()
-    );
+  const type = String(event?.type ?? "");
+  const obj: Obj = event?.data?.object ?? event?.data ?? event;
+  console.log(`issuer-webhook ${type}:`, raw.slice(0, 1200));
 
-    const isDebit =
-      /purchase|payment|withdrawal|transaction|authorization|debit/i.test(type) ||
-      /purchase|payment|withdrawal/i.test(String(pick(data, "type") ?? ""));
+  try {
+    switch (type) {
+      case "authorization.request": {
+        const ref = cardRef(obj);
+        const cents = Number(
+          obj?.pendingRequest?.amount ?? obj?.amount ?? 0
+        );
+        const amountUsd = cents / 100;
+        const verdict = await authorizeCardSpend(ref, amountUsd);
+        console.log(
+          `issuer-webhook authorization ${ref} $${amountUsd} -> ${verdict.responseCode}`
+        );
+        return NextResponse.json(
+          verdict.approved ? APPROVE : decline(verdict.responseCode),
+          { status: verdict.approved ? 200 : 400 }
+        );
+      }
 
-    if (providerRef && amountUsd > 0 && isDebit) {
-      const res = await recordCardSpend({
-        providerRef,
-        amountUsd,
-        merchant: typeof merchant === "string" ? merchant : "Card purchase",
-        externalRef,
-      });
-      console.log("issuer-webhook recorded:", JSON.stringify(res));
+      case "card.balance": {
+        const ref = cardRef(obj);
+        const usd = await cardBalanceUsd(ref);
+        if (usd == null) return NextResponse.json(decline("14"), { status: 400 });
+        return NextResponse.json({
+          statusCode: 200,
+          data: { responseCode: "00", balance: Math.round(usd * 100) },
+        });
+      }
+
+      case "transaction.created": {
+        const ref = cardRef(obj);
+        // Settled amounts arrive in dollars, negative for a debit.
+        const amountUsd = Math.abs(Number(obj?.amount ?? 0));
+        const merchant = obj?.merchant?.name ?? "Card purchase";
+        const externalRef = String(
+          obj?.transactionMetadata?.reference ?? obj?._id ?? crypto.randomUUID()
+        );
+        if (ref && amountUsd > 0) {
+          const res = await recordCardSpend({
+            providerRef: ref,
+            amountUsd,
+            merchant,
+            externalRef,
+          });
+          console.log("issuer-webhook recorded:", JSON.stringify(res));
+        }
+        break;
+      }
     }
   } catch (e) {
-    console.error("issuer-webhook parse error:", e);
+    console.error(`issuer-webhook ${type} error:`, e);
+    // Never leave the network hanging on an authorization — decline instead.
+    if (type === "authorization.request")
+      return NextResponse.json(decline("96"), { status: 400 }); // system error
   }
 
   return NextResponse.json({ received: true });

@@ -496,6 +496,38 @@ export async function revealCard(
   return { ok: false, error: "Card details unavailable." };
 }
 
+// Real-time authorization decision. Sudo's JIT gateway gives us ~4 seconds to
+// answer, so this stays a single indexed read — no transaction, no issuer call.
+// Response codes are ISO 8583, which is what the card network speaks.
+export async function authorizeCardSpend(
+  providerRef: string,
+  amountUsd: number
+): Promise<{ approved: boolean; responseCode: string }> {
+  const card = await queryOne(
+    `select status, balance from cards where provider_ref=$1`,
+    [providerRef]
+  );
+  if (!card) return { approved: false, responseCode: "14" }; // no such card
+  if (card.status === "terminated")
+    return { approved: false, responseCode: "54" }; // expired/closed card
+  if (card.status !== "active")
+    return { approved: false, responseCode: "62" }; // restricted (frozen)
+  if (Number(card.balance) < amountUsd)
+    return { approved: false, responseCode: "51" }; // insufficient funds
+  return { approved: true, responseCode: "00" };
+}
+
+// Balance enquiry (card.balance): the network asks what the card is worth.
+export async function cardBalanceUsd(
+  providerRef: string
+): Promise<number | null> {
+  const card = await queryOne(
+    `select balance from cards where provider_ref=$1`,
+    [providerRef]
+  );
+  return card ? Number(card.balance) : null;
+}
+
 // Records a real card authorization delivered by the issuer webhook. Idempotent
 // on the provider event reference so retries/duplicate deliveries are safe.
 export async function recordCardSpend(p: {

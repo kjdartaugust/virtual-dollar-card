@@ -57,18 +57,36 @@ export class SudoIssuer implements IssuerService {
     return brand === "mastercard" ? "MasterCard" : "Visa";
   }
 
+  // Cards must hang off a *gateway* funding source, which is what makes Dola the
+  // real-time authorizer: Sudo posts every spend to this URL and waits ~4s for a
+  // verdict (see /api/issuer/webhook). An "default" (account-backed) funding
+  // source would let Sudo settle against its own wallet and never ask us — and
+  // simulated authorizations against it are silently dropped.
+  //
+  // authorizeByDefault: false means a timeout on our side declines the spend
+  // rather than waving it through.
   private async ensureFundingSource(): Promise<string> {
-    const list = await this.request<Array<{ _id: string; isDefault?: boolean }>>(
-      "GET",
-      "/fundingsources"
-    );
+    const url = process.env.ISSUER_WEBHOOK_URL;
+    const token = process.env.SUDO_WEBHOOK_TOKEN;
+    if (!url || !token)
+      throw new Error("ISSUER_WEBHOOK_URL and SUDO_WEBHOOK_TOKEN are required.");
+
+    const list = await this.request<
+      Array<{ _id: string; type?: string; jitGateway?: { url?: string } }>
+    >("GET", "/fundingsources");
     const existing = Array.isArray(list)
-      ? list.find((f) => f.isDefault) ?? list[0]
+      ? list.find((f) => f.type === "gateway" && f.jitGateway?.url === url)
       : undefined;
     if (existing?._id) return existing._id;
+
     const created = await this.request<{ _id: string }>("POST", "/fundingsources", {
-      type: "default",
+      type: "gateway",
       status: "active",
+      jitGateway: {
+        url,
+        authorizationHeader: token,
+        authorizeByDefault: false,
+      },
     });
     return created._id;
   }
