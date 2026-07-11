@@ -1,5 +1,6 @@
 import { MockIssuer } from "./mock";
 import { MidenIssuer } from "./miden";
+import { SudoIssuer } from "./sudo";
 import type { IssuerService } from "./types";
 
 // Single place to swap the issuer implementation. Selected by the server-only
@@ -11,6 +12,9 @@ export function getIssuer(): IssuerService {
   if (instance) return instance;
   const provider = process.env.ISSUER_PROVIDER ?? "mock";
   switch (provider) {
+    case "sudo":
+      instance = new SudoIssuer();
+      break;
     case "miden":
       instance = new MidenIssuer();
       break;

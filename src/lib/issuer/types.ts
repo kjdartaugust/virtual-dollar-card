@@ -7,21 +7,44 @@
 
 import type { CardBrand } from "@/lib/types";
 
+// KYC/customer context a real issuer needs to create a cardholder. The mock
+// ignores everything except the cardholder name.
+export interface CustomerContext {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  dob?: string; // YYYY-MM-DD
+  idNumber?: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  // Reuse an existing provider cardholder/account if we've already created one
+  // for this Dola user (stored in our DB).
+  providerCustomerId?: string;
+  providerAccountId?: string;
+}
+
 export interface IssueCardParams {
   cardholder: string;
   brand: CardBrand;
   initialLoadUsd: number;
   label?: string;
+  customer?: CustomerContext;
 }
 
 export interface IssuedCard {
   providerRef: string;
   brand: CardBrand;
-  pan: string;
-  cvv: string;
+  pan: string; // real PAN for mock; masked PAN for live issuers (vault reveal is separate)
+  cvv: string; // "•••" for live issuers
   expMonth: number;
   expYear: number;
   last4: string;
+  // Present for real issuers so we can persist the mapping and reuse it.
+  providerCustomerId?: string;
+  providerAccountId?: string;
+  masked?: boolean; // true when pan is masked (live issuer)
 }
 
 export interface AuthorizationRequest {

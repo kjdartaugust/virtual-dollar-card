@@ -12,8 +12,12 @@ create table if not exists users (
   full_name     text not null,
   phone         text,
   country       text not null default 'Ghana',
+  -- Cardholder id at the issuer (Sudo customer), created once and reused so we
+  -- don't mint a new provider cardholder for every card.
+  provider_customer_id text,
   created_at    timestamptz not null default now()
 );
+alter table users add column if not exists provider_customer_id text;
 
 do $$ begin
   create type kyc_status as enum ('unverified','pending','verified','rejected');

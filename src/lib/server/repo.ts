@@ -229,21 +229,51 @@ export async function issueCard(
   userId: string,
   p: { label: string; brand: CardBrand; color: string; initialLoadUsd: number }
 ): Promise<{ ok: boolean; error?: string; cardId?: string }> {
-  const kyc = await queryOne(`select status from kyc where user_id=$1`, [
-    userId,
-  ]);
+  const user = await queryOne(
+    `select full_name, email, phone, provider_customer_id from users where id=$1`,
+    [userId]
+  );
+  const kyc = await queryOne(
+    `select status, date_of_birth, id_number, address, city from kyc where user_id=$1`,
+    [userId]
+  );
+  if (!user) return { ok: false, error: "User not found." };
   if (!kyc || kyc.status !== "verified")
     return { ok: false, error: "Complete identity verification first." };
   if (p.initialLoadUsd < CONFIG.minCardLoad)
     return { ok: false, error: `Load at least $${CONFIG.minCardLoad}.` };
 
   const total = p.initialLoadUsd + CONFIG.cardIssueFee;
-  const issued = await getIssuer().issueCard({
-    cardholder: "",
-    brand: p.brand,
-    initialLoadUsd: p.initialLoadUsd,
-    label: p.label,
-  });
+
+  const [firstName, ...rest] = String(user.full_name).trim().split(/\s+/);
+  let issued;
+  try {
+    issued = await getIssuer().issueCard({
+      cardholder: user.full_name,
+      brand: p.brand,
+      initialLoadUsd: p.initialLoadUsd,
+      label: p.label,
+      customer: {
+        firstName: firstName || "Card",
+        lastName: rest.join(" ") || "Holder",
+        email: user.email,
+        phone: user.phone ?? undefined,
+        dob: kyc.date_of_birth
+          ? new Date(kyc.date_of_birth).toISOString().slice(0, 10)
+          : undefined,
+        idNumber: kyc.id_number ?? undefined,
+        address: kyc.address ?? undefined,
+        city: kyc.city ?? undefined,
+        country: "Ghana",
+        providerCustomerId: user.provider_customer_id ?? undefined,
+      },
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Card issuer error.",
+    };
+  }
 
   return withTransaction(async (c) => {
     const wRes = await c.query(
@@ -257,10 +287,7 @@ export async function issueCard(
         error: `You need $${total.toFixed(2)} (load + $${CONFIG.cardIssueFee} fee).`,
       };
 
-    const uRes = await c.query(`select full_name from users where id=$1`, [
-      userId,
-    ]);
-    const cardholder = String(uRes.rows[0].full_name).toUpperCase();
+    const cardholder = String(user.full_name).toUpperCase();
 
     const cRes = await c.query(
       `insert into cards (user_id, provider_ref, brand, label, last4, exp_month, exp_year, cardholder, balance, color)
@@ -297,6 +324,13 @@ export async function issueCard(
        values ($1,$2,'card_fund','success',$3,$4,$5,'Initial load · wallet → card')`,
       [userId, cardId, -p.initialLoadUsd, issued.last4, ref()]
     );
+    // Remember the issuer cardholder id so future cards reuse it.
+    if (issued.providerCustomerId && !user.provider_customer_id) {
+      await c.query(`update users set provider_customer_id=$2 where id=$1`, [
+        userId,
+        issued.providerCustomerId,
+      ]);
+    }
     return { ok: true, cardId };
   });
 }
