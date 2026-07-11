@@ -2,6 +2,7 @@ import "server-only";
 import { query, queryOne, withTransaction } from "@/lib/db";
 import { CONFIG, ghsToUsd } from "@/lib/config";
 import { getIssuer } from "@/lib/issuer";
+import { IssuerUnavailableError } from "@/lib/issuer/types";
 import {
   DEFAULT_CONTROLS,
   evaluateControls,
@@ -285,6 +286,11 @@ export async function issueCard(
       },
     });
   } catch (e) {
+    // The card was never created, so nothing is charged — the wallet debit
+    // happens in the transaction below, after the issuer has said yes.
+    console.error("issueCard issuer error:", e);
+    if (e instanceof IssuerUnavailableError)
+      return { ok: false, error: `${e.message} Please try again in a moment.` };
     return {
       ok: false,
       error: e instanceof Error ? e.message : "Card issuer error.",
@@ -351,6 +357,21 @@ export async function issueCard(
   });
 }
 
+// An issuer outage is a "try again", not a bug. Anything else is worth the raw
+// message — the issuer usually says something useful ("No sufficient funds").
+function issuerFailure(
+  e: unknown,
+  fallback: string
+): { ok: false; error: string } {
+  console.error("issuer action failed:", e);
+  if (e instanceof IssuerUnavailableError)
+    return { ok: false, error: `${e.message} Please try again in a moment.` };
+  return {
+    ok: false,
+    error: e instanceof Error && e.message ? e.message : fallback,
+  };
+}
+
 type CardAction =
   | { kind: "fund"; amount: number }
   | { kind: "withdraw"; amount: number }
@@ -372,10 +393,17 @@ export async function cardAction(
   if (!card) return { ok: false, error: "Card not found." };
   const issuer = getIssuer();
 
+  // Card-state changes must land at the issuer first. If the issuer refuses or
+  // is unreachable we leave our row alone, rather than showing a card as frozen
+  // while it still spends on the network.
   if (action.kind === "freeze" || action.kind === "unfreeze") {
     const frozen = action.kind === "freeze";
-    if (frozen) await issuer.freezeCard(card.provider_ref);
-    else await issuer.unfreezeCard(card.provider_ref);
+    try {
+      if (frozen) await issuer.freezeCard(card.provider_ref);
+      else await issuer.unfreezeCard(card.provider_ref);
+    } catch (e) {
+      return issuerFailure(e, `Couldn't ${frozen ? "freeze" : "unfreeze"} the card.`);
+    }
     await query(`update cards set status=$2 where id=$1`, [
       cardId,
       frozen ? "frozen" : "active",
@@ -384,7 +412,11 @@ export async function cardAction(
   }
 
   if (action.kind === "terminate") {
-    await issuer.terminateCard(card.provider_ref);
+    try {
+      await issuer.terminateCard(card.provider_ref);
+    } catch (e) {
+      return issuerFailure(e, "Couldn't terminate the card.");
+    }
     return withTransaction(async (c) => {
       const refund = Number(card.balance);
       if (refund > 0) {

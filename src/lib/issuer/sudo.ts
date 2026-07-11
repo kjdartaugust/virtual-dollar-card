@@ -2,6 +2,7 @@ import {
   toSudoSpendingControls,
   type SpendingControls,
 } from "@/lib/spending-controls";
+import { IssuerUnavailableError } from "./types";
 import type {
   AuthorizationRequest,
   AuthorizationResult,
@@ -31,6 +32,7 @@ export class SudoIssuer implements IssuerService {
     ? "https://vault.sandbox.sudo.cards"
     : "https://vault.sudo.cards";
   private readonly apiKey = process.env.SUDO_API_KEY ?? "";
+  private readonly timeoutMs = 15_000;
 
   // Sudo returns HTTP 201 with a business-level `statusCode` in the body, so we
   // key off that rather than the HTTP status.
@@ -40,19 +42,34 @@ export class SudoIssuer implements IssuerService {
     body?: unknown
   ): Promise<T> {
     if (!this.apiKey) throw new Error("SUDO_API_KEY not set");
-    const res = await fetch(`${this.apiBase}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.apiBase}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        // A hung issuer must not hang the user's request.
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (e) {
+      const timedOut = e instanceof Error && e.name === "TimeoutError";
+      throw new IssuerUnavailableError(
+        timedOut
+          ? "The card issuer took too long to respond."
+          : "Couldn't reach the card issuer."
+      );
+    }
     const json = await res.json().catch(() => ({}));
     const code = (json as { statusCode?: number }).statusCode ?? res.status;
     if (code >= 400) {
       const m = (json as { message?: unknown }).message;
-      throw new Error(typeof m === "string" ? m : JSON.stringify(m));
+      const msg = typeof m === "string" ? m : JSON.stringify(m);
+      // 5xx is the issuer failing, not us sending something invalid.
+      if (code >= 500) throw new IssuerUnavailableError(msg);
+      throw new Error(msg);
     }
     return ((json as { data?: T }).data ?? json) as T;
   }

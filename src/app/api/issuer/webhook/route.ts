@@ -31,6 +31,29 @@ const decline = (responseCode: string, reason?: string) => ({
   data: { responseCode, ...(reason ? { reason } : {}) },
 });
 
+// Sudo gives us ~4 seconds to decide. If we blow that budget they time out and
+// (with authorizeByDefault: false) decline anyway — but silently, and we'd never
+// know why. Answering ourselves at 3s means a slow database shows up as a
+// logged "96" we can actually see, rather than a phantom decline.
+const DECISION_BUDGET_MS = 3000;
+
+async function withBudget<T>(work: Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(
+        `issuer-webhook: decision exceeded ${DECISION_BUDGET_MS}ms budget`
+      );
+      resolve(fallback);
+    }, DECISION_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function tokenOk(headers: Headers): boolean {
   const expected = process.env.SUDO_WEBHOOK_TOKEN;
   if (!expected) return true; // not configured yet — accept (dev)
@@ -89,12 +112,20 @@ export async function POST(req: Request) {
         const amountUsd = cents / 100;
         // The network tells us where and how the card is being used — that's
         // what the cardholder's spending controls are evaluated against.
-        const verdict = await authorizeCardSpend(ref, amountUsd, {
-          mcc: obj?.merchant?.category
-            ? String(obj.merchant.category)
-            : undefined,
-          channel: obj?.transactionMetadata?.channel,
-        });
+        const verdict = await withBudget(
+          authorizeCardSpend(ref, amountUsd, {
+            mcc: obj?.merchant?.category
+              ? String(obj.merchant.category)
+              : undefined,
+            channel: obj?.transactionMetadata?.channel,
+          }),
+          // Out of time is a decline. Never approve money we couldn't verify.
+          {
+            approved: false,
+            responseCode: "96",
+            reason: "Issuer timed out",
+          }
+        );
         console.log(
           `issuer-webhook authorization ${ref} $${amountUsd} -> ${verdict.responseCode}` +
             (verdict.reason ? ` (${verdict.reason})` : "")

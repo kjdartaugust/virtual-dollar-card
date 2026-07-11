@@ -94,7 +94,7 @@ const features = [
 const faqs = [
   {
     q: "Is this real money?",
-    a: "This is a portfolio/sandbox build. It demonstrates the full flow of a real virtual-card business using test data and a mock issuer that mirrors providers like Miden and Korapay — no live funds move.",
+    a: "Not yet. Cards are issued by a real card issuer (Sudo) but in sandbox, and Paystack runs in test mode — so no live funds move. The architecture is the production one: Dola holds the ledger and authorizes every card spend in real time, in the card network's own protocol.",
   },
   {
     q: "How would it work in production?",

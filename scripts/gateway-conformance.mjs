@@ -36,10 +36,15 @@ async function post(body, token = TOKEN) {
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
-  return { http: res.status, code: json?.data?.responseCode, balance: json?.data?.balance };
+  return {
+    http: res.status,
+    code: json?.data?.responseCode,
+    balance: json?.data?.balance,
+    reason: json?.data?.reason,
+  };
 }
 
-const authRequest = (cardId, cents) => ({
+const authRequest = (cardId, cents, { mcc = "5815", channel = "web" } = {}) => ({
   type: "authorization.request",
   environment: "development",
   createdAt: Math.floor(Date.now() / 1000),
@@ -50,8 +55,8 @@ const authRequest = (cardId, cents) => ({
       amount: 0,
       currency: "USD",
       status: "pending",
-      merchant: { name: "Spotify", merchantId: "SUDOSIMULATOR01", category: "5815" },
-      transactionMetadata: { channel: "web", type: "purchase", reference: `ref_${Date.now()}` },
+      merchant: { name: "Spotify", merchantId: "SUDOSIMULATOR01", category: mcc },
+      transactionMetadata: { channel, type: "purchase", reference: `ref_${Date.now()}` },
       pendingRequest: { amount: cents, currency: "USD", merchantAmount: cents },
     },
   },
@@ -114,6 +119,27 @@ check("card.balance → cents", r.code === "00" && r.balance === Math.round(bal 
 
 r = await post(authRequest(CARD, 100), "wrong-token");
 check("bad authorization header → 401", r.http === 401, `http=${r.http}`);
+
+// Spending controls: policy the gateway enforces inside the authorization.
+const savedControls = card.spending_controls;
+await sql`update cards set spending_controls=${JSON.stringify({
+  monthlyLimitUsd: 5,
+  blockedCategories: ["gambling"],
+  channels: { web: true, pos: true, atm: false, mobile: true },
+})} where provider_ref=${CARD}`;
+
+r = await post(authRequest(CARD, 250, { mcc: "7995" }));
+check("blocked category (gambling) → 57", r.code === "57", `code=${r.code} "${r.reason ?? ""}"`);
+
+r = await post(authRequest(CARD, 250, { channel: "atm" }));
+check("disabled channel (atm) → 58", r.code === "58", `code=${r.code} "${r.reason ?? ""}"`);
+
+r = await post(authRequest(CARD, 600));
+check("over monthly limit → 61", r.code === "61", `code=${r.code} "${r.reason ?? ""}"`);
+
+await sql`update cards set spending_controls=${
+  savedControls ? JSON.stringify(savedControls) : null
+} where provider_ref=${CARD}`;
 
 const reference = `ref_settle_${Date.now()}`;
 await post(txnCreated(CARD, 2.5, reference));

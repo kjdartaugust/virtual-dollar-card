@@ -1,11 +1,21 @@
 import type { SpendingControls } from "@/lib/spending-controls";
 
+// The issuer is down, unreachable, or too slow — as opposed to us having sent it
+// something invalid. Worth distinguishing: one is "try again in a minute", the
+// other is a bug. Callers surface the message to the user.
+export class IssuerUnavailableError extends Error {
+  constructor(message = "The card issuer is unavailable.") {
+    super(message);
+    this.name = "IssuerUnavailableError";
+  }
+}
+
 // IssuerService — the integration seam.
 //
-// This interface mirrors the surface area real B2B card issuers expose
-// (Miden, Korapay Cards, Fyatu). Today it's backed by a mock; to go live you
-// implement this same interface against the provider's SDK and swap it in
-// `issuer/index.ts` — no UI or store changes required.
+// This interface mirrors the surface area B2B card issuers expose. It's backed
+// by SudoIssuer (real virtual USD cards) and MockIssuer (Luhn-valid test cards,
+// no network). Adding a provider means implementing this interface and adding a
+// case in `issuer/index.ts` — no UI or store changes required.
 
 import type { CardBrand } from "@/lib/types";
 
