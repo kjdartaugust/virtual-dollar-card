@@ -68,4 +68,9 @@ export interface IssuerService {
   terminateCard(providerRef: string): Promise<void>;
   // Simulates a merchant authorization (an online purchase hitting the card).
   authorize(req: AuthorizationRequest): Promise<AuthorizationResult>;
+  // Returns full card secrets (PAN/CVV). Null when the issuer can't reveal
+  // server-side (the mock returns null; secrets then come from our own store).
+  revealCard(
+    providerRef: string
+  ): Promise<{ pan: string; cvv: string } | null>;
 }

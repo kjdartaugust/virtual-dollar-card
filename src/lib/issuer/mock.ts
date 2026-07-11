@@ -84,4 +84,9 @@ export class MockIssuer implements IssuerService {
     }
     return { approved: true, authCode: randomDigits(6) };
   }
+
+  // The mock doesn't hold secrets — they live in our own store/DB.
+  async revealCard(): Promise<{ pan: string; cvv: string } | null> {
+    return null;
+  }
 }

@@ -22,6 +22,10 @@ export class SudoIssuer implements IssuerService {
   private readonly apiBase = this.sandbox
     ? "https://api.sandbox.sudo.cards"
     : "https://api.sudo.cards";
+  // PCI vault host for card-detail reveal (the docs list these swapped).
+  private readonly vaultBase = this.sandbox
+    ? "https://vault.sandbox.sudo.cards"
+    : "https://vault.sudo.cards";
   private readonly apiKey = process.env.SUDO_API_KEY ?? "";
 
   // Sudo returns HTTP 201 with a business-level `statusCode` in the body, so we
@@ -194,5 +198,21 @@ export class SudoIssuer implements IssuerService {
       approved: false,
       reason: "Live spends are authorized by the network via webhook.",
     };
+  }
+
+  // Full PAN/CVV via Sudo's PCI vault. In production you'd proxy this to the
+  // browser so raw digits never touch your server; for this sandbox we fetch
+  // server-side and hand them to the authenticated cardholder.
+  async revealCard(
+    providerRef: string
+  ): Promise<{ pan: string; cvv: string } | null> {
+    const res = await fetch(
+      `${this.vaultBase}/cards/${providerRef}?reveal=true`,
+      { headers: { Authorization: `Bearer ${this.apiKey}` } }
+    );
+    const json = await res.json().catch(() => ({}));
+    const d = (json.data ?? json) as { number?: string; cvv2?: string };
+    if (!d.number) return null;
+    return { pan: d.number, cvv: d.cvv2 ?? "•••" };
   }
 }

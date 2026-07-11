@@ -113,6 +113,9 @@ interface StoreContextValue {
     usd: number,
     merchant: string
   ) => Promise<{ ok: boolean; error?: string }>;
+  revealCard: (
+    cardId: string
+  ) => Promise<{ pan: string; cvv: string } | null>;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -645,6 +648,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return { ok: true };
   };
 
+  const revealCard: StoreContextValue["revealCard"] = async (cardId) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}/reveal`, {});
+      if (res.ok && res.pan) return { pan: res.pan, cvv: res.cvv };
+      return null;
+    }
+    const card = state?.cards.find((c) => c.id === cardId);
+    return card ? { pan: card.pan, cvv: card.cvv } : null;
+  };
+
   const value: StoreContextValue = {
     ready,
     state,
@@ -663,6 +676,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setCardFrozen,
     terminateCard,
     spend,
+    revealCard,
   };
 
   return (

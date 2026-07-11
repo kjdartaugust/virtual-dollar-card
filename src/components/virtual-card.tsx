@@ -35,14 +35,19 @@ export function VirtualCard({
   card,
   revealed = false,
   interactive = true,
+  secrets,
   className,
 }: {
   card: Card;
   revealed?: boolean;
   interactive?: boolean;
+  // Real PAN/CVV fetched on demand (live issuers store masked values on `card`).
+  secrets?: { pan: string; cvv: string } | null;
   className?: string;
 }) {
   const toast = useToast();
+  const shownPan = revealed ? secrets?.pan ?? card.pan : card.pan;
+  const shownCvv = revealed ? secrets?.cvv ?? card.cvv : card.cvv;
   const ref = useRef<HTMLDivElement>(null);
   const [tilt, setTilt] = useState({ rx: 0, ry: 0, gx: 50, gy: 0 });
   const gradient = CARD_COLORS[card.color] ?? CARD_COLORS.aurora;
@@ -130,13 +135,13 @@ export function VirtualCard({
           </div>
 
           <button
-            onClick={() => revealed && copy(card.pan, "Card number")}
+            onClick={() => revealed && copy(shownPan, "Card number")}
             className={cn(
               "text-left font-mono text-lg tracking-[0.2em] drop-shadow-sm sm:text-xl",
               revealed && "hover:text-white/90"
             )}
           >
-            {revealed ? groupCardNumber(card.pan) : maskCardNumber(card.pan)}
+            {revealed ? groupCardNumber(shownPan) : maskCardNumber(card.pan)}
           </button>
 
           <div className="flex items-end justify-between">
@@ -163,7 +168,7 @@ export function VirtualCard({
                   CVV
                 </p>
                 <p className="font-mono text-sm tabular">
-                  {revealed ? card.cvv : "•••"}
+                  {revealed ? shownCvv : "•••"}
                 </p>
               </div>
               <BrandMark brand={card.brand} />
@@ -173,7 +178,7 @@ export function VirtualCard({
 
         {revealed && (
           <button
-            onClick={() => copy(card.pan, "Card number")}
+            onClick={() => copy(shownPan, "Card number")}
             className="absolute right-4 top-4 rounded-lg bg-white/15 p-1.5 backdrop-blur transition-colors hover:bg-white/25"
             aria-label="Copy card number"
           >

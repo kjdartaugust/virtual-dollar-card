@@ -95,4 +95,9 @@ export class MidenIssuer implements IssuerService {
       reason: "Live spends are authorized by the network via webhook.",
     };
   }
+
+  async revealCard(): Promise<{ pan: string; cvv: string } | null> {
+    // TODO(miden): fetch via Miden's secure card-details endpoint.
+    return null;
+  }
 }

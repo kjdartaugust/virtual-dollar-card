@@ -472,3 +472,60 @@ export async function cardAction(
     return { ok: true };
   });
 }
+
+// Returns full PAN/CVV for a card the user owns. Prefers the issuer's secure
+// reveal (Sudo vault); falls back to our own store (mock cards).
+export async function revealCard(
+  userId: string,
+  cardId: string
+): Promise<{ ok: boolean; pan?: string; cvv?: string; error?: string }> {
+  const card = await queryOne(
+    `select c.provider_ref, s.pan, s.cvv from cards c
+     left join card_secrets s on s.card_id=c.id
+     where c.id=$1 and c.user_id=$2`,
+    [cardId, userId]
+  );
+  if (!card) return { ok: false, error: "Card not found." };
+  try {
+    const fromIssuer = await getIssuer().revealCard(card.provider_ref);
+    if (fromIssuer) return { ok: true, ...fromIssuer };
+  } catch (e) {
+    console.error("revealCard issuer error:", e);
+  }
+  if (card.pan) return { ok: true, pan: card.pan, cvv: card.cvv };
+  return { ok: false, error: "Card details unavailable." };
+}
+
+// Records a real card authorization delivered by the issuer webhook. Idempotent
+// on the provider event reference so retries/duplicate deliveries are safe.
+export async function recordCardSpend(p: {
+  providerRef: string;
+  amountUsd: number;
+  merchant: string;
+  externalRef: string;
+}): Promise<{ ok: boolean; duplicate?: boolean; error?: string }> {
+  return withTransaction(async (c) => {
+    const dup = await c.query(`select 1 from transactions where reference=$1`, [
+      p.externalRef,
+    ]);
+    if (dup.rows.length) return { ok: true, duplicate: true };
+
+    const cardRes = await c.query(
+      `select id, user_id, last4 from cards where provider_ref=$1 for update`,
+      [p.providerRef]
+    );
+    const card = cardRes.rows[0];
+    if (!card) return { ok: false, error: "Card not found for provider ref." };
+
+    await c.query(
+      `update cards set balance = greatest(0, balance - $2) where id=$1`,
+      [card.id, p.amountUsd]
+    );
+    await c.query(
+      `insert into transactions (user_id, card_id, type, status, amount_usd, merchant, card_last4, reference, note)
+       values ($1,$2,'card_spend','success',$3,$4,$5,$6,'Live card authorization')`,
+      [card.user_id, card.id, -p.amountUsd, p.merchant, card.last4, p.externalRef]
+    );
+    return { ok: true };
+  });
+}

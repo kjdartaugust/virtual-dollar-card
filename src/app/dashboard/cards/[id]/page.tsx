@@ -48,9 +48,14 @@ export default function CardDetailPage() {
     spend,
     setCardFrozen,
     terminateCard,
+    revealCard,
   } = useStore();
 
   const [revealed, setRevealed] = useState(false);
+  const [secrets, setSecrets] = useState<{ pan: string; cvv: string } | null>(
+    null
+  );
+  const [revealing, setRevealing] = useState(false);
   const [action, setAction] = useState<ActionKind>(null);
   const [amount, setAmount] = useState("");
   const [merchant, setMerchant] = useState(MERCHANTS[0]);
@@ -122,6 +127,24 @@ export default function CardDetailPage() {
     router.push("/dashboard/cards");
   };
 
+  const toggleReveal = async () => {
+    if (revealed) {
+      setRevealed(false);
+      return;
+    }
+    if (!secrets) {
+      setRevealing(true);
+      const s = await revealCard(card.id);
+      setRevealing(false);
+      if (!s) {
+        toast("Couldn't fetch card details", "error");
+        return;
+      }
+      setSecrets(s);
+    }
+    setRevealed(true);
+  };
+
   const actionTitle =
     action === "fund"
       ? "Add money to card"
@@ -141,11 +164,12 @@ export default function CardDetailPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Left: the card + reveal */}
         <div className="space-y-4">
-          <VirtualCard card={card} revealed={revealed} />
+          <VirtualCard card={card} revealed={revealed} secrets={secrets} />
           <Button
             variant="outline"
             className="w-full"
-            onClick={() => setRevealed((r) => !r)}
+            onClick={toggleReveal}
+            loading={revealing}
             disabled={terminated}
           >
             {revealed ? (
@@ -163,7 +187,9 @@ export default function CardDetailPage() {
             <DetailRow
               label="Card number"
               value={
-                revealed ? groupCardNumber(card.pan) : `•••• •••• •••• ${card.last4}`
+                revealed
+                  ? groupCardNumber(secrets?.pan ?? card.pan)
+                  : `•••• •••• •••• ${card.last4}`
               }
               mono
             />
@@ -177,7 +203,7 @@ export default function CardDetailPage() {
               />
               <DetailRow
                 label="CVV"
-                value={revealed ? card.cvv : "•••"}
+                value={revealed ? secrets?.cvv ?? card.cvv : "•••"}
                 mono
               />
             </div>
