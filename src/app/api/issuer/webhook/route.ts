@@ -77,9 +77,13 @@ export async function POST(req: Request) {
     switch (type) {
       case "authorization.request": {
         const ref = cardRef(obj);
-        const cents = Number(
-          obj?.pendingRequest?.amount ?? obj?.amount ?? 0
-        );
+        const cents = Number(obj?.pendingRequest?.amount ?? obj?.amount);
+        // A payload we can't read is a payload we don't approve — never let a
+        // missing amount fall through as $0 and sail past the balance check.
+        if (!ref || !Number.isFinite(cents) || cents <= 0) {
+          console.error("issuer-webhook: unreadable authorization", raw.slice(0, 500));
+          return NextResponse.json(decline("96"), { status: 400 });
+        }
         const amountUsd = cents / 100;
         const verdict = await authorizeCardSpend(ref, amountUsd);
         console.log(
