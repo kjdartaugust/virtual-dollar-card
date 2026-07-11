@@ -24,9 +24,11 @@ import {
 // so an unrecognized token is rejected outright rather than silently approved.
 
 const APPROVE = { statusCode: 200, data: { responseCode: "00" } };
-const decline = (responseCode: string) => ({
+// `reason` is ours, not Sudo's — they read responseCode and ignore the rest. It
+// lets our own UI show why a spend was refused instead of guessing from a code.
+const decline = (responseCode: string, reason?: string) => ({
   statusCode: 400,
-  data: { responseCode },
+  data: { responseCode, ...(reason ? { reason } : {}) },
 });
 
 function tokenOk(headers: Headers): boolean {
@@ -85,12 +87,22 @@ export async function POST(req: Request) {
           return NextResponse.json(decline("96"), { status: 400 });
         }
         const amountUsd = cents / 100;
-        const verdict = await authorizeCardSpend(ref, amountUsd);
+        // The network tells us where and how the card is being used — that's
+        // what the cardholder's spending controls are evaluated against.
+        const verdict = await authorizeCardSpend(ref, amountUsd, {
+          mcc: obj?.merchant?.category
+            ? String(obj.merchant.category)
+            : undefined,
+          channel: obj?.transactionMetadata?.channel,
+        });
         console.log(
-          `issuer-webhook authorization ${ref} $${amountUsd} -> ${verdict.responseCode}`
+          `issuer-webhook authorization ${ref} $${amountUsd} -> ${verdict.responseCode}` +
+            (verdict.reason ? ` (${verdict.reason})` : "")
         );
         return NextResponse.json(
-          verdict.approved ? APPROVE : decline(verdict.responseCode),
+          verdict.approved
+            ? APPROVE
+            : decline(verdict.responseCode, verdict.reason),
           { status: verdict.approved ? 200 : 400 }
         );
       }

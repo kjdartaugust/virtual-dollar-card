@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/card";
 import { VirtualCard } from "@/components/virtual-card";
 import { CONFIG, sellRate } from "@/lib/config";
 import type { Card } from "@/lib/types";
+import { DEFAULT_CONTROLS } from "@/lib/spending-controls";
 import {
   ArrowRight,
   BadgeCheck,
@@ -35,6 +36,8 @@ const heroCard: Card = {
   color: "aurora",
   createdAt: new Date().toISOString(),
   last4: "4242",
+  controls: DEFAULT_CONTROLS,
+  spentThisMonth: 0,
 };
 
 const steps = [

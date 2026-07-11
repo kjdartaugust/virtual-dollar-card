@@ -2,6 +2,13 @@ import "server-only";
 import { query, queryOne, withTransaction } from "@/lib/db";
 import { CONFIG, ghsToUsd } from "@/lib/config";
 import { getIssuer } from "@/lib/issuer";
+import {
+  DEFAULT_CONTROLS,
+  evaluateControls,
+  mccForMerchant,
+  type Channel,
+  type SpendingControls,
+} from "@/lib/spending-controls";
 import type {
   AppState,
   Card,
@@ -74,6 +81,8 @@ function mapCard(r: any): Card {
     color: r.color,
     createdAt: new Date(r.created_at).toISOString(),
     last4: r.last4,
+    controls: { ...DEFAULT_CONTROLS, ...(r.spending_controls ?? {}) },
+    spentThisMonth: Number(r.spent_this_month ?? 0),
   };
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -131,7 +140,14 @@ export async function getFullState(userId: string): Promise<AppState | null> {
     userId,
   ]);
   const cards = await query(
-    `select c.*, s.pan, s.cvv from cards c
+    `select c.*, s.pan, s.cvv,
+            coalesce((
+              select sum(abs(t.amount_usd)) from transactions t
+              where t.card_id = c.id and t.type = 'card_spend'
+                and t.status = 'success'
+                and t.created_at >= date_trunc('month', now())
+            ), 0) as spent_this_month
+     from cards c
      left join card_secrets s on s.card_id = c.id
      where c.user_id = $1 order by c.created_at desc`,
     [userId]
@@ -511,6 +527,7 @@ async function networkSpend(
     return { ok: false, error: "Authorization gateway is not configured." };
 
   const reference = ref();
+  let declineReason: string | undefined;
   const post = async (body: unknown) => {
     const res = await fetch(url, {
       method: "POST",
@@ -518,6 +535,7 @@ async function networkSpend(
       body: JSON.stringify(body),
     });
     const json = await res.json().catch(() => ({}));
+    declineReason = json?.data?.reason;
     return json?.data?.responseCode as string | undefined;
   };
 
@@ -531,7 +549,8 @@ async function networkSpend(
         card: { _id: card.provider_ref },
         currency: "USD",
         status: "pending",
-        merchant: { name: merchant, category: "5815" },
+        // Real MCCs, so category rules are exercised the way the network would.
+        merchant: { name: merchant, category: mccForMerchant(merchant) },
         transactionMetadata: { channel: "web", type: "purchase", reference },
         // Authorizations carry minor units.
         pendingRequest: {
@@ -543,7 +562,8 @@ async function networkSpend(
   });
 
   if (code !== "00") {
-    const reason = DECLINE_REASONS[code ?? ""] ?? "Declined by issuer";
+    const reason =
+      declineReason ?? DECLINE_REASONS[code ?? ""] ?? "Declined by issuer";
     await query(
       `insert into transactions (user_id, card_id, type, status, amount_usd, merchant, card_last4, reference, note)
        values ($1,$2,'card_spend','declined',$3,$4,$5,$6,$7)`,
@@ -594,14 +614,15 @@ export async function revealCard(
 }
 
 // Real-time authorization decision. Sudo's JIT gateway gives us ~4 seconds to
-// answer, so this stays a single indexed read — no transaction, no issuer call.
+// answer, so this stays two indexed reads — no transaction, no issuer call.
 // Response codes are ISO 8583, which is what the card network speaks.
 export async function authorizeCardSpend(
   providerRef: string,
-  amountUsd: number
-): Promise<{ approved: boolean; responseCode: string }> {
+  amountUsd: number,
+  ctx: { mcc?: string; channel?: Channel } = {}
+): Promise<{ approved: boolean; responseCode: string; reason?: string }> {
   const card = await queryOne(
-    `select status, balance from cards where provider_ref=$1`,
+    `select id, status, balance, spending_controls from cards where provider_ref=$1`,
     [providerRef]
   );
   if (!card) return { approved: false, responseCode: "14" }; // no such card
@@ -611,7 +632,72 @@ export async function authorizeCardSpend(
     return { approved: false, responseCode: "62" }; // restricted (frozen)
   if (Number(card.balance) < amountUsd)
     return { approved: false, responseCode: "51" }; // insufficient funds
+
+  // The cardholder's own policy — the reason being the authorizer is worth
+  // something. A monthly limit only needs a month-to-date sum when one is set.
+  const controls: SpendingControls = {
+    ...DEFAULT_CONTROLS,
+    ...(card.spending_controls ?? {}),
+  };
+  const spentThisMonthUsd =
+    controls.monthlyLimitUsd != null
+      ? await cardSpentThisMonth(card.id)
+      : 0;
+
+  const verdict = evaluateControls(controls, {
+    amountUsd,
+    mcc: ctx.mcc,
+    channel: ctx.channel,
+    spentThisMonthUsd,
+  });
+  if (!verdict.allowed)
+    return {
+      approved: false,
+      responseCode: verdict.responseCode,
+      reason: verdict.reason,
+    };
+
   return { approved: true, responseCode: "00" };
+}
+
+// Settled spend on a card since the start of the current calendar month.
+// Declined attempts don't count against the limit.
+async function cardSpentThisMonth(cardId: string): Promise<number> {
+  const row = await queryOne(
+    `select coalesce(sum(abs(amount_usd)), 0) as total from transactions
+     where card_id=$1 and type='card_spend' and status='success'
+       and created_at >= date_trunc('month', now())`,
+    [cardId]
+  );
+  return Number(row?.total ?? 0);
+}
+
+// Persists the cardholder's policy and mirrors it onto the issuer, so a blocked
+// spend is refused network-side even if our gateway is unreachable.
+export async function setSpendingControls(
+  userId: string,
+  cardId: string,
+  controls: SpendingControls
+): Promise<{ ok: boolean; error?: string }> {
+  const card = await queryOne(
+    `select provider_ref from cards where id=$1 and user_id=$2`,
+    [cardId, userId]
+  );
+  if (!card) return { ok: false, error: "Card not found." };
+
+  await query(`update cards set spending_controls=$2 where id=$1`, [
+    cardId,
+    JSON.stringify(controls),
+  ]);
+
+  try {
+    await getIssuer().setSpendingControls?.(card.provider_ref, controls);
+  } catch (e) {
+    // Ours is the enforcing copy; the issuer's is a backstop. Don't fail the
+    // user's save because the issuer mirror didn't take.
+    console.error("setSpendingControls issuer mirror failed:", e);
+  }
+  return { ok: true };
 }
 
 // Balance enquiry (card.balance): the network asks what the card is worth.

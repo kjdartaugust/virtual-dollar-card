@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/server/auth";
-import { cardAction, getFullState } from "@/lib/server/repo";
+import {
+  cardAction,
+  getFullState,
+  setSpendingControls,
+} from "@/lib/server/repo";
+import { DEFAULT_CONTROLS } from "@/lib/spending-controls";
 
 export async function POST(
   req: Request,
@@ -38,6 +43,12 @@ export async function POST(
         break;
       case "terminate":
         res = await cardAction(userId, id, { kind: "terminate" });
+        break;
+      case "controls":
+        res = await setSpendingControls(userId, id, {
+          ...DEFAULT_CONTROLS,
+          ...body.controls,
+        });
         break;
       default:
         return NextResponse.json({ error: "Unknown action." }, { status: 400 });

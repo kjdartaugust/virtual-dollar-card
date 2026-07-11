@@ -2,6 +2,9 @@
 // These types mirror what a real card-issuing provider (Miden / Korapay / Fyatu)
 // exposes, so the mock issuer can later be swapped for a live API with the same shapes.
 
+import type { SpendingControls } from "./spending-controls";
+export type { SpendingControls };
+
 export type KycStatus = "unverified" | "pending" | "verified" | "rejected";
 
 export type IdType = "ghana_card" | "passport" | "drivers_license" | "voter_id";
@@ -52,6 +55,10 @@ export interface Card {
   color: string; // gradient key for the UI
   createdAt: string;
   last4: string;
+  // Policy the authorization gateway enforces on every spend.
+  controls: SpendingControls;
+  // Settled spend in the current calendar month, for the limit UI.
+  spentThisMonth: number;
 }
 
 export type TxnType =

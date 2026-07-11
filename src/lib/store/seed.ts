@@ -44,6 +44,13 @@ export function demoState(): AppState {
     color: "aurora",
     createdAt: iso(30),
     last4: "4242",
+    // The demo card ships with a policy so the controls have something to show.
+    controls: {
+      monthlyLimitUsd: 100,
+      blockedCategories: ["gambling", "crypto"],
+      channels: { web: true, pos: true, atm: false, mobile: true },
+    },
+    spentThisMonth: 0,
   };
 
   return {

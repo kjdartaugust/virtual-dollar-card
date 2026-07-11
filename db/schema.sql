@@ -103,6 +103,14 @@ create table if not exists payments (
   created_at  timestamptz not null default now()
 );
 
+-- Spending controls the authorization gateway enforces (monthly limit, blocked
+-- merchant categories, allowed channels). Null = the card's defaults.
+alter table cards add column if not exists spending_controls jsonb;
+
 create index if not exists transactions_user_created_idx on transactions (user_id, created_at desc);
 create index if not exists cards_user_idx on cards (user_id);
 create index if not exists payments_user_idx on payments (user_id);
+-- The gateway looks a card up by provider ref on every authorization, and sums
+-- month-to-date spend on a card — both are hot paths inside a 4s budget.
+create index if not exists cards_provider_ref_idx on cards (provider_ref);
+create index if not exists transactions_card_created_idx on transactions (card_id, created_at desc);

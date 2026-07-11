@@ -11,6 +11,8 @@ import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { VirtualCard } from "@/components/virtual-card";
 import { TransactionItem } from "@/components/dashboard/transaction-item";
+import { SpendingControlsPanel } from "@/components/dashboard/spending-controls";
+import { DEMO_MERCHANTS } from "@/lib/spending-controls";
 import { formatDate, formatUSD, groupCardNumber } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -26,16 +28,10 @@ import {
 
 type ActionKind = "fund" | "withdraw" | "spend" | null;
 
-const MERCHANTS = [
-  "Netflix",
-  "Spotify",
-  "OpenAI",
-  "Amazon",
-  "Meta Ads",
-  "Google Ads",
-  "AWS",
-  "Steam",
-];
+// Each carries the MCC the real merchant carries (see lib/spending-controls),
+// so the category rules are exercised the way the card network would exercise
+// them — Bet9ja really is 7995, and a card that blocks gambling really declines.
+const MERCHANTS = Object.keys(DEMO_MERCHANTS);
 
 export default function CardDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -271,6 +267,8 @@ export default function CardDetailPage() {
               </button>
             )}
           </Card>
+
+          {!terminated && <SpendingControlsPanel card={card} />}
 
           <Card className="px-5">
             <p className="border-b border-border py-3 text-sm font-semibold text-foreground">

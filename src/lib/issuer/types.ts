@@ -1,3 +1,5 @@
+import type { SpendingControls } from "@/lib/spending-controls";
+
 // IssuerService — the integration seam.
 //
 // This interface mirrors the surface area real B2B card issuers expose
@@ -73,4 +75,11 @@ export interface IssuerService {
   revealCard(
     providerRef: string
   ): Promise<{ pan: string; cvv: string } | null>;
+  // Mirrors the cardholder's spending policy onto the issuer. Optional: our
+  // gateway is the enforcing copy, this is a network-side backstop for issuers
+  // that support it.
+  setSpendingControls?(
+    providerRef: string,
+    controls: SpendingControls
+  ): Promise<void>;
 }

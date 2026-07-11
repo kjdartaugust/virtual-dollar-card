@@ -12,6 +12,12 @@ import type {
 import { CONFIG, ghsToUsd } from "@/lib/config";
 import { getIssuer } from "@/lib/issuer";
 import { uid } from "@/lib/utils";
+import {
+  DEFAULT_CONTROLS,
+  evaluateControls,
+  mccForMerchant,
+  type SpendingControls,
+} from "@/lib/spending-controls";
 import { demoState, emptyState } from "./seed";
 
 // When true, auth + all mutations go through the real backend API. When false
@@ -116,6 +122,10 @@ interface StoreContextValue {
   revealCard: (
     cardId: string
   ) => Promise<{ pan: string; cvv: string } | null>;
+  setControls: (
+    cardId: string,
+    controls: SpendingControls
+  ) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -384,6 +394,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       color: p.color,
       createdAt: new Date().toISOString(),
       last4: issued.last4,
+      controls: DEFAULT_CONTROLS,
+      spentThisMonth: 0,
     };
     setState((s) => {
       if (!s) return s;
@@ -622,6 +634,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!auth.approved) return declined(auth.reason ?? "Declined");
     if (card.status !== "active") return declined("Card is not active");
     if (card.balance < usd) return declined("Insufficient card balance");
+    // Demo mode runs the same policy engine the gateway runs server-side, so
+    // spending controls behave identically with no backend.
+    const verdict = evaluateControls(card.controls, {
+      amountUsd: usd,
+      mcc: mccForMerchant(merchant),
+      channel: "web",
+      spentThisMonthUsd: card.spentThisMonth,
+    });
+    if (!verdict.allowed) return declined(verdict.reason ?? "Declined");
     setState((s) => {
       if (!s) return s;
       const txn: Transaction = {
@@ -639,12 +660,43 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         {
           ...s,
           cards: s.cards.map((c) =>
-            c.id === cardId ? { ...c, balance: +(c.balance - usd).toFixed(2) } : c
+            c.id === cardId
+              ? {
+                  ...c,
+                  balance: +(c.balance - usd).toFixed(2),
+                  spentThisMonth: +(c.spentThisMonth + usd).toFixed(2),
+                }
+              : c
           ),
         },
         txn
       );
     });
+    return { ok: true };
+  };
+
+  const setControls: StoreContextValue["setControls"] = async (
+    cardId,
+    controls
+  ) => {
+    if (backendSession) {
+      const res = await api(`/api/cards/${cardId}`, {
+        action: "controls",
+        controls,
+      });
+      if (res.state) setState(res.state);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
+    setState((s) =>
+      s
+        ? {
+            ...s,
+            cards: s.cards.map((c) =>
+              c.id === cardId ? { ...c, controls } : c
+            ),
+          }
+        : s
+    );
     return { ok: true };
   };
 
@@ -677,6 +729,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     terminateCard,
     spend,
     revealCard,
+    setControls,
   };
 
   return (

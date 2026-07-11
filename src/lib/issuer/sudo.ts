@@ -1,3 +1,7 @@
+import {
+  toSudoSpendingControls,
+  type SpendingControls,
+} from "@/lib/spending-controls";
 import type {
   AuthorizationRequest,
   AuthorizationResult,
@@ -216,6 +220,19 @@ export class SudoIssuer implements IssuerService {
       approved: false,
       reason: "Live spends are authorized by the network via webhook.",
     };
+  }
+
+  // Mirrors the cardholder's policy onto the Sudo card. Our JIT gateway is the
+  // enforcing copy — this is the backstop that still refuses a blocked spend if
+  // our gateway is ever unreachable.
+  async setSpendingControls(
+    providerRef: string,
+    controls: SpendingControls
+  ): Promise<void> {
+    await this.request("PUT", `/cards/${providerRef}`, {
+      status: "active",
+      spendingControls: toSudoSpendingControls(controls),
+    });
   }
 
   // Full PAN/CVV via Sudo's PCI vault. In production you'd proxy this to the
