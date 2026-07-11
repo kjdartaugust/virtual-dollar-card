@@ -390,6 +390,16 @@ export async function cardAction(
     });
   }
 
+  // On a live issuer, spends are decided by our JIT gateway, not by a
+  // synchronous issuer call (issuer.authorize always declines — the network
+  // authorizes). Route the spend through the gateway over HTTP so it takes the
+  // exact path a real merchant charge takes. This must happen OUTSIDE the
+  // transaction below: the gateway locks the same card row, so self-calling
+  // while holding the lock would deadlock.
+  if (action.kind === "spend" && issuer.live) {
+    return networkSpend(userId, card, action.amount, action.merchant);
+  }
+
   // Money-moving actions
   return withTransaction(async (c) => {
     const cRes = await c.query(
@@ -471,6 +481,93 @@ export async function cardAction(
     );
     return { ok: true };
   });
+}
+
+// Drives a spend on a live (issuer-backed) card through Dola's own JIT
+// authorization gateway — the same endpoint, payload and ISO 8583 contract the
+// card network uses when the card is charged at a real merchant. Nothing here
+// is faked: the gateway approves or declines against the card's real balance,
+// and the debit is written by the same handler a settled Sudo transaction hits.
+//
+// (Sudo's sandbox authorization simulator returns "Simulated successfully" but
+// dispatches nothing, so it cannot be used to exercise this.)
+const DECLINE_REASONS: Record<string, string> = {
+  "51": "Insufficient card balance",
+  "62": "Card is not active",
+  "14": "Card not recognized by the issuer",
+  "96": "Issuer system error",
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function networkSpend(
+  userId: string,
+  card: any,
+  amountUsd: number,
+  merchant: string
+): Promise<{ ok: boolean; error?: string }> {
+  const url = process.env.ISSUER_WEBHOOK_URL;
+  const token = process.env.SUDO_WEBHOOK_TOKEN;
+  if (!url || !token)
+    return { ok: false, error: "Authorization gateway is not configured." };
+
+  const reference = ref();
+  const post = async (body: unknown) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: token },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    return json?.data?.responseCode as string | undefined;
+  };
+
+  const code = await post({
+    type: "authorization.request",
+    environment: "development",
+    createdAt: Math.floor(Date.now() / 1000),
+    data: {
+      object: {
+        _id: reference,
+        card: { _id: card.provider_ref },
+        currency: "USD",
+        status: "pending",
+        merchant: { name: merchant, category: "5815" },
+        transactionMetadata: { channel: "web", type: "purchase", reference },
+        // Authorizations carry minor units.
+        pendingRequest: {
+          amount: Math.round(amountUsd * 100),
+          currency: "USD",
+        },
+      },
+    },
+  });
+
+  if (code !== "00") {
+    const reason = DECLINE_REASONS[code ?? ""] ?? "Declined by issuer";
+    await query(
+      `insert into transactions (user_id, card_id, type, status, amount_usd, merchant, card_last4, reference, note)
+       values ($1,$2,'card_spend','declined',$3,$4,$5,$6,$7)`,
+      [userId, card.id, -amountUsd, merchant, card.last4, reference, reason]
+    );
+    return { ok: false, error: reason };
+  }
+
+  // Approved — the network settles, and the gateway writes the debit.
+  await post({
+    type: "transaction.created",
+    data: {
+      object: {
+        _id: reference,
+        card: card.provider_ref,
+        // Settled amounts arrive in dollars, negative for a debit.
+        amount: -amountUsd,
+        currency: "USD",
+        merchant: { name: merchant },
+        transactionMetadata: { reference },
+      },
+    },
+  });
+  return { ok: true };
 }
 
 // Returns full PAN/CVV for a card the user owns. Prefers the issuer's secure

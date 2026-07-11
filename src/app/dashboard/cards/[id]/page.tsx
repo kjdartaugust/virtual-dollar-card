@@ -298,7 +298,7 @@ export default function CardDetailPage() {
         title={actionTitle}
         description={
           action === "spend"
-            ? "Send a test authorization to this card via the sandbox issuer."
+            ? "Runs a real authorization through Dola's gateway — the same request, and the same approve/decline contract, the card network uses at a live merchant."
             : undefined
         }
       >
