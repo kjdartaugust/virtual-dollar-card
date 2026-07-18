@@ -114,3 +114,63 @@ create index if not exists payments_user_idx on payments (user_id);
 -- month-to-date spend on a card — both are hot paths inside a 4s budget.
 create index if not exists cards_provider_ref_idx on cards (provider_ref);
 create index if not exists transactions_card_created_idx on transactions (card_id, created_at desc);
+
+-- ---------------------------------------------------------------------------
+-- Susu — rotating savings circles and personal savings goals (the native app).
+-- Amounts are stored in GHS (the susu app's base currency); display conversion
+-- to USD stays client-side. Members can be plain names now and get linked to a
+-- real Dola user when invites land (see circle_members.user_id).
+-- ---------------------------------------------------------------------------
+
+create table if not exists circles (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid not null references users(id) on delete cascade,
+  name         text not null,
+  contribution numeric(14,2) not null,            -- GHS per member, per cycle
+  frequency    text not null default 'monthly',   -- weekly | biweekly | monthly
+  start_date   date not null,
+  created_at   timestamptz not null default now()
+);
+
+create table if not exists circle_members (
+  id         uuid primary key default gen_random_uuid(),
+  circle_id  uuid not null references circles(id) on delete cascade,
+  position   int not null,                        -- payout order, 0-based
+  name       text not null,                       -- display name
+  -- Set once this slot is claimed by a real user (invite flow, step 4).
+  -- Null = a placeholder the organizer typed in.
+  user_id    uuid references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (circle_id, position)
+);
+
+-- Presence of a row = that member paid that cycle; absence = unpaid.
+create table if not exists circle_payments (
+  circle_id   uuid not null references circles(id) on delete cascade,
+  member_id   uuid not null references circle_members(id) on delete cascade,
+  cycle_index int not null,
+  paid_at     timestamptz not null default now(),
+  primary key (circle_id, member_id, cycle_index)
+);
+
+create table if not exists goals (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references users(id) on delete cascade,
+  name       text not null,
+  target     numeric(14,2) not null,              -- GHS
+  created_at timestamptz not null default now()
+);
+
+create table if not exists goal_txns (
+  id         uuid primary key default gen_random_uuid(),
+  goal_id    uuid not null references goals(id) on delete cascade,
+  amount     numeric(14,2) not null,              -- GHS, + deposit / - withdrawal
+  note       text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists circles_owner_idx on circles (owner_id);
+create index if not exists circle_members_circle_idx on circle_members (circle_id);
+create index if not exists circle_members_user_idx on circle_members (user_id);
+create index if not exists goals_user_idx on goals (user_id);
+create index if not exists goal_txns_goal_idx on goal_txns (goal_id);
