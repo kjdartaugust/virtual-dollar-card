@@ -169,8 +169,21 @@ create table if not exists goal_txns (
   created_at timestamptz not null default now()
 );
 
+-- An invite claims a specific member slot in a circle. The organizer creates
+-- one, shares the link; whoever opens it and accepts has their user id written
+-- onto that circle_members row, turning a typed-in name into a real member.
+create table if not exists circle_invites (
+  token      text primary key,
+  circle_id  uuid not null references circles(id) on delete cascade,
+  member_id  uuid not null references circle_members(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  claimed_by uuid references users(id) on delete set null,
+  claimed_at timestamptz
+);
+
 create index if not exists circles_owner_idx on circles (owner_id);
 create index if not exists circle_members_circle_idx on circle_members (circle_id);
 create index if not exists circle_members_user_idx on circle_members (user_id);
 create index if not exists goals_user_idx on goals (user_id);
 create index if not exists goal_txns_goal_idx on goal_txns (goal_id);
+create index if not exists circle_invites_circle_idx on circle_invites (circle_id);

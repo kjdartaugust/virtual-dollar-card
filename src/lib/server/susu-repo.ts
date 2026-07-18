@@ -24,6 +24,7 @@ export interface SusuCircle {
   startDate: string; // ISO date
   members: SusuMember[]; // ordered by payout position
   paid: Record<string, boolean>; // `${cycleIndex}:${memberId}` -> true
+  owner: boolean; // true when the current user organizes this circle
 }
 
 export interface SusuTxn {
@@ -51,11 +52,13 @@ export const paidKey = (cycleIndex: number, memberId: string) =>
 /* ---------------------------------------------------------------- read ---- */
 
 export async function getSusuState(userId: string): Promise<SusuState> {
-  // Circles the user organizes. (Step 4 will widen this to circles they're a
-  // member of, once slots link to real users.)
+  // Circles the user organizes OR belongs to (a slot claimed via an invite).
   const circleRows = await query(
-    `select id, name, contribution, frequency, start_date
-       from circles where owner_id = $1 order by created_at`,
+    `select id, name, contribution, frequency, start_date, owner_id
+       from circles
+      where owner_id = $1
+         or id in (select circle_id from circle_members where user_id = $1)
+      order by created_at`,
     [userId]
   );
   const circleIds = circleRows.map((c) => c.id);
@@ -104,6 +107,7 @@ export async function getSusuState(userId: string): Promise<SusuState> {
       startDate: new Date(c.start_date).toISOString().slice(0, 10),
       members,
       paid,
+      owner: c.owner_id === userId,
     };
   });
 
@@ -251,5 +255,112 @@ export async function addGoalTxn(
        (select 1 from goals where id = $1 and user_id = $4)`,
     [goalId, input.amount, input.note ?? "", userId]
   );
+  return getSusuState(userId);
+}
+
+/* --------------------------------------------------------------- invites -- */
+
+function inviteToken(): string {
+  return (
+    Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+  ).slice(0, 24);
+}
+
+// Owner creates (or reuses) an invite for one still-unclaimed member slot.
+export async function createInvite(
+  userId: string,
+  circleId: string,
+  memberId: string
+): Promise<string> {
+  if (!(await ownsCircle(userId, circleId)))
+    throw new Error("Circle not found");
+  const member = await queryOne(
+    `select user_id from circle_members where id = $1 and circle_id = $2`,
+    [memberId, circleId]
+  );
+  if (!member) throw new Error("Member not found");
+  if (member.user_id) throw new Error("That member has already joined");
+
+  const existing = await queryOne(
+    `select token from circle_invites
+      where member_id = $1 and claimed_by is null limit 1`,
+    [memberId]
+  );
+  if (existing) return existing.token;
+
+  const token = inviteToken();
+  await query(
+    `insert into circle_invites (token, circle_id, member_id) values ($1, $2, $3)`,
+    [token, circleId, memberId]
+  );
+  return token;
+}
+
+export interface InvitePreview {
+  circleName: string;
+  memberName: string;
+  contribution: number;
+  claimed: boolean;
+}
+
+export async function getInvitePreview(
+  token: string
+): Promise<InvitePreview | null> {
+  const row = await queryOne(
+    `select ci.claimed_by, cm.name as member_name,
+            c.name as circle_name, c.contribution
+       from circle_invites ci
+       join circle_members cm on cm.id = ci.member_id
+       join circles c on c.id = ci.circle_id
+      where ci.token = $1`,
+    [token]
+  );
+  if (!row) return null;
+  return {
+    circleName: row.circle_name,
+    memberName: row.member_name,
+    contribution: Number(row.contribution),
+    claimed: !!row.claimed_by,
+  };
+}
+
+// The invitee claims the slot: their user id is written onto the member row and
+// the invite is marked used. Row-locked so a slot can't be claimed twice.
+export async function acceptInvite(
+  userId: string,
+  token: string
+): Promise<SusuState> {
+  await withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `select member_id, claimed_by from circle_invites where token = $1 for update`,
+      [token]
+    );
+    const invite = rows[0];
+    if (!invite) throw new Error("Invite not found");
+    if (invite.claimed_by) throw new Error("This invite has already been used");
+
+    const { rows: mrows } = await client.query(
+      `select circle_id, user_id from circle_members where id = $1`,
+      [invite.member_id]
+    );
+    const member = mrows[0];
+    if (!member) throw new Error("Member not found");
+    if (member.user_id) throw new Error("That slot is already taken");
+
+    const { rows: dup } = await client.query(
+      `select 1 from circle_members where circle_id = $1 and user_id = $2`,
+      [member.circle_id, userId]
+    );
+    if (dup[0]) throw new Error("You're already in this circle");
+
+    await client.query(`update circle_members set user_id = $1 where id = $2`, [
+      userId,
+      invite.member_id,
+    ]);
+    await client.query(
+      `update circle_invites set claimed_by = $1, claimed_at = now() where token = $2`,
+      [userId, token]
+    );
+  });
   return getSusuState(userId);
 }
