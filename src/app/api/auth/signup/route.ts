@@ -25,9 +25,9 @@ export async function POST(req: Request) {
       fullName,
       phone: phone || undefined,
     });
-    await setSessionCookie(id);
+    const token = await setSessionCookie(id);
     const state = await getFullState(id);
-    return NextResponse.json({ state });
+    return NextResponse.json({ state, token });
   } catch (e) {
     console.error("signup", e);
     return NextResponse.json({ error: "Signup failed." }, { status: 500 });

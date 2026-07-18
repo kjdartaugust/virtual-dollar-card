@@ -11,9 +11,9 @@ export async function POST(req: Request) {
         { error: "Invalid email or password." },
         { status: 401 }
       );
-    await setSessionCookie(user.id);
+    const token = await setSessionCookie(user.id);
     const state = await getFullState(user.id);
-    return NextResponse.json({ state });
+    return NextResponse.json({ state, token });
   } catch (e) {
     console.error("login", e);
     return NextResponse.json({ error: "Login failed." }, { status: 500 });

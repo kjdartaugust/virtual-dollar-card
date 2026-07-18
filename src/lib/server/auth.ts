@@ -1,7 +1,7 @@
 import "server-only";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 const COOKIE = "dola_session";
 const secret = () =>
@@ -26,7 +26,9 @@ export async function signSession(userId: string): Promise<string> {
     .sign(secret());
 }
 
-export async function setSessionCookie(userId: string): Promise<void> {
+// Sets the web session cookie and returns the token, so native callers (which
+// have no cookie jar) can store the same token and send it as a Bearer header.
+export async function setSessionCookie(userId: string): Promise<string> {
   const token = await signSession(userId);
   const jar = await cookies();
   jar.set(COOKIE, token, {
@@ -36,6 +38,7 @@ export async function setSessionCookie(userId: string): Promise<void> {
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
+  return token;
 }
 
 export async function clearSessionCookie(): Promise<void> {
@@ -43,15 +46,27 @@ export async function clearSessionCookie(): Promise<void> {
   jar.delete(COOKIE);
 }
 
-// Returns the authenticated user id, or null if there's no valid session.
-export async function getSessionUserId(): Promise<string | null> {
-  const jar = await cookies();
-  const token = jar.get(COOKIE)?.value;
-  if (!token) return null;
+async function verifyToken(token: string): Promise<string | null> {
   try {
     const { payload } = await jwtVerify(token, secret());
     return (payload.sub as string) ?? null;
   } catch {
     return null;
   }
+}
+
+// Returns the authenticated user id, or null if there's no valid session.
+// Web clients carry the session in an httpOnly cookie; native clients (the Expo
+// app) have no cookie jar and send it as an `Authorization: Bearer` header.
+export async function getSessionUserId(): Promise<string | null> {
+  const jar = await cookies();
+  const cookieToken = jar.get(COOKIE)?.value;
+  if (cookieToken) {
+    const uid = await verifyToken(cookieToken);
+    if (uid) return uid;
+  }
+  const auth = (await headers()).get("authorization") ?? "";
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return verifyToken(bearer[1].trim());
+  return null;
 }
