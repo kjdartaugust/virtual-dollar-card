@@ -44,6 +44,8 @@ export interface SusuGoal {
 export interface SusuState {
   circles: SusuCircle[];
   goals: SusuGoal[];
+  /** The signed-in user's name, so any device can greet them after login. */
+  userName: string;
 }
 
 export const paidKey = (cycleIndex: number, memberId: string) =>
@@ -80,6 +82,11 @@ export async function getSusuState(userId: string): Promise<SusuState> {
 
   const goalRows = await query(
     `select id, name, target from goals where user_id = $1 order by created_at`,
+    [userId]
+  );
+
+  const userRow = await queryOne(
+    `select full_name from users where id = $1`,
     [userId]
   );
   const goalIds = goalRows.map((g) => g.id);
@@ -125,7 +132,7 @@ export async function getSusuState(userId: string): Promise<SusuState> {
       })),
   }));
 
-  return { circles, goals };
+  return { circles, goals, userName: userRow?.full_name ?? "" };
 }
 
 /* --------------------------------------------------------------- write ---- */
