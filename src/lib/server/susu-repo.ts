@@ -46,6 +46,9 @@ export interface SusuState {
   goals: SusuGoal[];
   /** The signed-in user's name, so any device can greet them after login. */
   userName: string;
+  /** The signed-in user's id, so the client can tell which member is them
+   *  without comparing display names (which are free text and collide). */
+  userId: string;
 }
 
 export const paidKey = (cycleIndex: number, memberId: string) =>
@@ -132,7 +135,7 @@ export async function getSusuState(userId: string): Promise<SusuState> {
       })),
   }));
 
-  return { circles, goals, userName: userRow?.full_name ?? "" };
+  return { circles, goals, userName: userRow?.full_name ?? "", userId };
 }
 
 /* --------------------------------------------------------------- write ---- */
@@ -164,9 +167,14 @@ export async function createCircle(
     const circleId = rows[0].id;
     const names = input.members.length ? input.members : ["Me"];
     for (let i = 0; i < names.length; i++) {
+      // Position 0 is the organiser — the app pre-fills their own name as the
+      // first member. Claiming that slot for them means they are identifiable
+      // among the members (so "you" and their own contributions resolve), and
+      // they are never offered an invite to their own seat.
       await client.query(
-        `insert into circle_members (circle_id, position, name) values ($1, $2, $3)`,
-        [circleId, i, names[i]]
+        `insert into circle_members (circle_id, position, name, user_id)
+         values ($1, $2, $3, $4)`,
+        [circleId, i, names[i], i === 0 ? userId : null]
       );
     }
   });
