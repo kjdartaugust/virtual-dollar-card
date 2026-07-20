@@ -82,12 +82,6 @@ export async function POST(request: Request) {
   if (!userId)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!process.env.ANTHROPIC_API_KEY)
-    return NextResponse.json(
-      { error: "Circle descriptions aren't set up yet." },
-      { status: 503 }
-    );
-
   let description: unknown;
   try {
     ({ description } = await request.json());
@@ -105,6 +99,14 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: `Keep it under ${MAX_INPUT} characters.` },
       { status: 400 }
+    );
+
+  // Checked after validating the request, so a malformed one gets a message
+  // about what's actually wrong with it rather than about configuration.
+  if (!process.env.ANTHROPIC_API_KEY)
+    return NextResponse.json(
+      { error: "Circle descriptions aren't set up yet." },
+      { status: 503 }
     );
 
   const client = new Anthropic();
