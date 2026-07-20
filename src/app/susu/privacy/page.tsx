@@ -22,7 +22,7 @@ export default function SusuPrivacyPolicy() {
         Susu — Privacy Policy
       </h1>
       <p style={{ opacity: 0.7, marginBottom: 28 }}>
-        Last updated: 18 July 2026
+        Last updated: 20 July 2026
       </p>
 
       <p>
@@ -44,6 +44,13 @@ export default function SusuPrivacyPolicy() {
             (their name, contribution amount, schedule, and the member names
             you type in), which members you mark as paid, and any savings goals
             and entries you add.
+          </li>
+          <li>
+            <strong>Circle descriptions you choose to type</strong>: if you use
+            the optional &ldquo;describe it instead&rdquo; shortcut when
+            creating a circle, the sentence you write is sent to our AI
+            provider to be turned into form fields. Using it is entirely up to
+            you — the ordinary form does the same job without it.
           </li>
         </ul>
         <p>
@@ -75,6 +82,15 @@ export default function SusuPrivacyPolicy() {
           Your data is stored on secure managed database infrastructure
           (hosted with Neon and Vercel) on our behalf. We may disclose
           information if required by law.
+        </p>
+        <p>
+          If you use the optional &ldquo;describe it instead&rdquo; shortcut,
+          that one sentence is sent to Anthropic, which provides the AI model
+          that reads it, solely to turn it into circle fields and return them
+          to you. It is not used to train models. Nothing else about your
+          account — not your email, your circles, your payments, or your goals
+          — is sent there, and if you never use that shortcut nothing is sent
+          at all.
         </p>
       </Section>
 
