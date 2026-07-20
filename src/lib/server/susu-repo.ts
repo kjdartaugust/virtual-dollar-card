@@ -316,26 +316,46 @@ export interface InvitePreview {
   memberName: string;
   contribution: number;
   claimed: boolean;
+  frequency: Frequency;
+  /** Everyone in the circle, in payout order, so the invitee can see the group
+   *  and their own seat in it before committing. */
+  members: string[];
+  /** The invitee's position in that list. */
+  position: number;
+  /** Who organises the circle. */
+  organiser: string;
 }
 
 export async function getInvitePreview(
   token: string
 ): Promise<InvitePreview | null> {
   const row = await queryOne(
-    `select ci.claimed_by, cm.name as member_name,
-            c.name as circle_name, c.contribution
+    `select ci.claimed_by, ci.circle_id, cm.name as member_name,
+            cm.position, c.name as circle_name, c.contribution, c.frequency,
+            owner.full_name as organiser
        from circle_invites ci
        join circle_members cm on cm.id = ci.member_id
        join circles c on c.id = ci.circle_id
+       join users owner on owner.id = c.owner_id
       where ci.token = $1`,
     [token]
   );
   if (!row) return null;
+
+  const memberRows = await query(
+    `select name from circle_members where circle_id = $1 order by position`,
+    [row.circle_id]
+  );
+
   return {
     circleName: row.circle_name,
     memberName: row.member_name,
     contribution: Number(row.contribution),
     claimed: !!row.claimed_by,
+    frequency: row.frequency as Frequency,
+    members: memberRows.map((m) => m.name),
+    position: Number(row.position),
+    organiser: row.organiser,
   };
 }
 
