@@ -48,8 +48,8 @@ export default function SusuPrivacyPolicy() {
           <li>
             <strong>Circle descriptions you choose to type</strong>: if you use
             the optional &ldquo;describe it instead&rdquo; shortcut when
-            creating a circle, the sentence you write is sent to our AI
-            provider to be turned into form fields. Using it is entirely up to
+            creating a circle, the sentence you write is sent to an AI provider
+            to be turned into form fields. Using it is entirely up to
             you — the ordinary form does the same job without it.
           </li>
         </ul>
@@ -85,12 +85,11 @@ export default function SusuPrivacyPolicy() {
         </p>
         <p>
           If you use the optional &ldquo;describe it instead&rdquo; shortcut,
-          that one sentence is sent to Anthropic, which provides the AI model
-          that reads it, solely to turn it into circle fields and return them
-          to you. It is not used to train models. Nothing else about your
-          account — not your email, your circles, your payments, or your goals
-          — is sent there, and if you never use that shortcut nothing is sent
-          at all.
+          that one sentence is sent through OpenRouter to the AI model that
+          reads it, solely to turn it into circle fields and return them to
+          you. Nothing else about your account — not your email, your circles,
+          your payments, or your goals — is sent there, and if you never use
+          that shortcut nothing is sent at all.
         </p>
       </Section>
 

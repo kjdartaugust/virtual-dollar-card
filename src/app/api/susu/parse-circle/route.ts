@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/server/auth";
 
@@ -11,8 +10,15 @@ import { getSessionUserId } from "@/lib/server/auth";
 // reviews every field before saving. That keeps a wrong parse cheap, and means
 // the free-text (which is untrusted input heading for a model) can't do
 // anything worse than fill a box in wrong.
+//
+// Runs through OpenRouter (an OpenAI-compatible gateway), so the model is just
+// a slug you can change without touching this code.
 
-const MODEL = "claude-opus-4-8";
+// Any OpenRouter model slug. Kept in one place so it's a one-line swap; a cheap
+// model is plenty for this — it's short structured extraction, not reasoning.
+const MODEL = "openai/gpt-4o-mini";
+
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // Long enough for a realistic description, short enough that a pasted essay
 // can't run up the bill.
@@ -103,42 +109,54 @@ export async function POST(request: Request) {
 
   // Checked after validating the request, so a malformed one gets a message
   // about what's actually wrong with it rather than about configuration.
-  if (!process.env.ANTHROPIC_API_KEY)
+  if (!process.env.OPENROUTER_API_KEY)
     return NextResponse.json(
       { error: "Circle descriptions aren't set up yet." },
       { status: 503 }
     );
 
-  const client = new Anthropic();
-
   try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      // No thinking: this is a short extraction, and the schema already
-      // constrains the shape. Latency matters more here than deliberation.
-      output_config: {
-        effort: "low",
-        format: { type: "json_schema", schema: SCHEMA },
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        // Optional attribution headers OpenRouter uses for its dashboard.
+        "X-Title": "Susu",
       },
-      system: SYSTEM,
-      messages: [{ role: "user", content: description.trim() }],
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 512,
+        messages: [
+          { role: "system", content: SYSTEM },
+          { role: "user", content: description.trim() },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "circle", strict: true, schema: SCHEMA },
+        },
+      }),
     });
 
-    if (response.stop_reason === "refusal")
+    if (!res.ok) {
+      console.error("openrouter error", res.status, await res.text());
+      return NextResponse.json(
+        { error: "Couldn't read that description. Try rewording it." },
+        { status: 502 }
+      );
+    }
+
+    const data = await res.json();
+    const message = data?.choices?.[0]?.message;
+
+    // The model declined, or returned nothing usable.
+    if (message?.refusal || typeof message?.content !== "string")
       return NextResponse.json(
         { error: "Couldn't read that description. Try rewording it." },
         { status: 422 }
       );
 
-    const text = response.content.find((b) => b.type === "text");
-    if (!text || text.type !== "text")
-      return NextResponse.json(
-        { error: "Couldn't read that description. Try rewording it." },
-        { status: 422 }
-      );
-
-    const parsed = JSON.parse(text.text) as ParsedCircle;
+    const parsed = JSON.parse(message.content) as ParsedCircle;
 
     // The schema constrains shape, not sense — clamp the values the form has
     // to live with rather than trusting them into the UI.
