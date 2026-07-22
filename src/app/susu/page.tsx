@@ -54,6 +54,21 @@ export default function SusuLanding() {
         >
           Privacy policy
         </a>
+        <a
+          href="/susu/terms"
+          style={{
+            display: "inline-block",
+            padding: "12px 22px",
+            borderRadius: 999,
+            border: "1px solid currentColor",
+            color: "inherit",
+            fontWeight: 700,
+            textDecoration: "none",
+            opacity: 0.85,
+          }}
+        >
+          Terms
+        </a>
       </div>
 
       <section style={{ marginTop: 40 }}>
